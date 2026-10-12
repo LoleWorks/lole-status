@@ -22,6 +22,7 @@ Command line (on the server):
   python hub.py add-client "BM Public"       create the client and its topic, print its key once
   python hub.py list-clients
   python hub.py rotate-key <id>              new key for a client (the old one stops working)
+  python hub.py create-topic <id>            create the client's topic now (if it could not be created at add-client)
   python hub.py disable-client <id> / enable-client <id>
 """
 from __future__ import annotations
@@ -127,6 +128,34 @@ def post(text: str, topic: int | None = None, chat: str | None = None) -> None:
         tg("sendMessage", **params)
 
 
+def create_topic(name: str) -> tuple[int | None, str]:
+    """Creates a forum topic in the group; returns (topic id, error text)."""
+    if not GROUP:
+        return None, "TELEGRAM_GROUP_ID nu este setat"
+    res = tg("createForumTopic", chat_id=GROUP, name=name)
+    if res and res.get("ok"):
+        return res["result"]["message_thread_id"], ""
+    return None, (res or {}).get("description", "fără răspuns de la Telegram")
+
+
+def ensure_topic(c, cl) -> int | None:
+    """A client without a topic (creation failed earlier) gets one as soon as it is possible; tried at most every 10 min."""
+    if cl["topic_id"] or not GROUP:
+        return cl["topic_id"]
+    k = f"topic_try_{cl['id']}"
+    if time.time() - float(kv_get(c, k) or 0) < 600:
+        return None
+    kv_set(c, k, str(time.time()))
+    topic, err = create_topic(cl["name"])
+    if topic:
+        c.execute("UPDATE clients SET topic_id = ? WHERE id = ?", (topic, cl["id"]))
+        post(f"Topicul clientului {cl['name']}. Aici apar alertele serverului lui. /ajutor pentru comenzi.", topic)
+        log.info("topic %s created for %s", topic, cl["name"])
+    else:
+        log.warning("cannot create the topic for %s: %s", cl["name"], err)
+    return topic
+
+
 def ago(ts: float | None) -> str:
     if not ts:
         return "niciodată"
@@ -174,12 +203,13 @@ class Api(BaseHTTPRequestHandler):
             if cl["silent"]:   # it was silent and talks again
                 c.execute("UPDATE clients SET silent = 0 WHERE id = ?", (cl["id"],))
                 post(f"[REVENIT] {cl['name']}: monitorul trimite din nou date (a tăcut de la "
-                     f"{datetime.fromtimestamp(cl['last_seen'] or now):%d.%m %H:%M}).", cl["topic_id"])
+                     f"{datetime.fromtimestamp(cl['last_seen'] or now):%d.%m %H:%M}).", cl["topic_id"] or None)
             c.execute("UPDATE clients SET last_seen = ? WHERE id = ?", (now, cl["id"]))
+            topic = ensure_topic(c, cl)
             if self.path == "/api/message":
                 text = str(body.get("text") or "").strip()[:12000]
                 if text:
-                    post(text, cl["topic_id"])
+                    post(text if topic else f"[{cl['name']}] {text}", topic)
                     c.execute("INSERT INTO events (client_id, at, kind, text) VALUES (?, ?, 'message', ?)", (cl["id"], now, text))
                 return self._send(200, {"ok": True})
             if self.path == "/api/heartbeat":
@@ -278,12 +308,11 @@ def bot_loop() -> None:
 def add_client(name: str) -> None:
     c = db()
     key = "ls_" + secrets.token_urlsafe(32)
-    topic = None
-    res = tg("createForumTopic", chat_id=GROUP, name=name) if GROUP else None
-    if res and res.get("ok"):
-        topic = res["result"]["message_thread_id"]
-    else:
-        print("ATENȚIE: topicul nu a putut fi creat (grupul are Topics activate și botul e admin cu drept de a gestiona topicuri?).")
+    topic, err = create_topic(name)
+    if not topic:
+        print(f"ATENȚIE: topicul nu a putut fi creat: {err}")
+        print("Verifică: grupul are Topics activate, botul e administrator cu dreptul „Gestionare topicuri”, "
+              "TELEGRAM_GROUP_ID e ID-ul grupului. Topicul se creează singur la următorul mesaj, după ce rezolvi.")
     c.execute("INSERT INTO clients (name, key_hash, topic_id, created_at) VALUES (?, ?, ?, ?)", (name, key_hash(key), topic, time.time()))
     if topic:
         post(f"Topicul clientului {name}. Aici apar alertele serverului lui. /ajutor pentru comenzi.", topic)
@@ -305,6 +334,17 @@ def main(argv: list[str]) -> int:
         key = "ls_" + secrets.token_urlsafe(32)
         n = db().execute("UPDATE clients SET key_hash = ? WHERE id = ?", (key_hash(key), int(argv[2]))).rowcount
         print(f"Cheie nouă:\n{key}" if n else "Client inexistent"); return 0
+    if cmd == "create-topic" and len(argv) == 3:
+        c = db()
+        cl = c.execute("SELECT * FROM clients WHERE id = ?", (int(argv[2]),)).fetchone()
+        if not cl:
+            print("Client inexistent"); return 1
+        topic, err = create_topic(cl["name"])
+        if not topic:
+            print(f"Topicul nu a putut fi creat: {err}"); return 1
+        c.execute("UPDATE clients SET topic_id = ? WHERE id = ?", (topic, cl["id"]))
+        post(f"Topicul clientului {cl['name']}. Aici apar alertele serverului lui. /ajutor pentru comenzi.", topic)
+        print(f"Topic creat pentru {cl['name']}: {topic}"); return 0
     if cmd in ("disable-client", "enable-client") and len(argv) == 3:
         n = db().execute("UPDATE clients SET active = ? WHERE id = ?", (1 if cmd == "enable-client" else 0, int(argv[2]))).rowcount
         print("Gata" if n else "Client inexistent"); return 0

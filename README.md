@@ -22,7 +22,9 @@ Commands: in a client topic `/status`, `/surse`, `/server`; in General `/clienti
    creates the topic and prints the client's key once. Put it in the client's monitor as `STATUS_HUB_KEY`
    (and `STATUS_HUB_URL`, e.g. `http://status-hub:8080` on the same server).
 
-Other commands: `python hub.py list-clients`, `rotate-key <id>`, `disable-client <id>`, `enable-client <id>`.
+Other commands: `python hub.py list-clients`, `create-topic <id>` (if the topic could not be created when the client was added; it is also retried by itself every 10 minutes while the client reports), `rotate-key <id>`, `disable-client <id>`, `enable-client <id>`.
+
+A client without a topic writes in General, with its name in front of each message.
 
 ## Where it runs
 
