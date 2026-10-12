@@ -1,0 +1,28 @@
+# Stack "lole-status" (Portainer: Stacks > Add stack > Repository, this repository).
+# The Lole Status Telegram bot: one group with a topic per client. Secrets only in Portainer variables.
+name: lole-status
+
+services:
+  status-hub:
+    build: .
+    image: lole-status:latest
+    pull_policy: build
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Chisinau
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_GROUP_ID: ${TELEGRAM_GROUP_ID:-}
+      HUB_SILENT_MIN: ${HUB_SILENT_MIN:-15}
+      HUB_DAILY_AT: ${HUB_DAILY_AT:-09:00}
+    volumes:
+      - hub-data:/data
+    # No public port: monitors on this server reach it as http://status-hub:8080 on the "bm-bi" network.
+    # For clients on other servers, publish it behind HTTPS (reverse proxy) or move this stack to a Lole Works VPS.
+    networks: [bm-bi]
+
+networks:
+  bm-bi:
+    external: true
+
+volumes:
+  hub-data:
